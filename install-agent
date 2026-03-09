@@ -13,7 +13,7 @@ cp ./OPTiCS-AGENT -r ../
 cp ./OPTiCS-AGENT-DASHBOARD -r ../
 cd ..
 echo "[OPTiCS Installer] Cleaning up..." 
-rm -rf OPTiCS
+rm -rf ./OPTiCS
 echo "[OPTiCS Installer] Repository clone successful."
 sleep 1
 echo "[OPTiCS Installer] Docker-compose phase start in 3..."
