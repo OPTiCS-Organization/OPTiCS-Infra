@@ -1,3 +1,51 @@
+#!/bin/bash
+
+# OS Detection
+OS=$(uname -s)
+if [ "$OS" = "Linux" ]; then
+  DISTRO=$(. /etc/os-release && echo "$ID")
+  echo "[OPTiCS Installer] Detected OS: $DISTRO"
+elif [ "$OS" = "Darwin" ]; then
+  echo "[OPTiCS Installer] Detected OS: macOS"
+else
+  echo "[OPTiCS Installer] Detected OS: Unknown ($OS)"
+fi
+
+# Docker Check
+echo "[OPTiCS Installer] Checking Docker version..."
+DOCKER_VER=$(docker --version 2>/dev/null)
+if [ -z "$DOCKER_VER" ]; then
+  read -p "[OPTiCS Installer] Docker is not installed. Do you want to install it? (Y/n): " answer
+    if [ -z "$answer" ] || [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
+    echo "[OPTiCS Installer] Installing Docker..."
+    # TODO: distro별 설치 로직
+  else
+    echo "[OPTiCS Installer] Client install impossible. Aborting..."
+    exit 1
+  fi
+else
+  echo "[OPTiCS Installer] Docker detected: $DOCKER_VER"
+fi
+
+# Docker Compose Check
+echo "[OPTiCS Installer] Checking docker-compose version..."
+if command -v docker-compose &>/dev/null; then
+  COMPOSE_CMD="docker-compose"
+  echo "[OPTiCS Installer] docker-compose detected: $(docker-compose --version)"
+elif docker compose version &>/dev/null 2>&1; then
+  COMPOSE_CMD="docker compose"
+  echo "[OPTiCS Installer] docker compose (plugin) detected: $(docker compose version)"
+else
+  read -p "[OPTiCS Installer] docker-compose is not installed. Do you want to install it? (Y/n): " answer
+    if [ -z "$answer" ] || [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
+    echo "[OPTiCS Installer] Installing docker-compose..."
+    # TODO: 설치 로직
+  else
+    echo "[OPTiCS Installer] Client install impossible. Aborting..."
+    exit 1
+  fi
+fi
+
 INSTALL_DIR="$(pwd)/optics-build"
 
 echo "[OPTiCS Installer] Starting clone from github..."
@@ -17,14 +65,25 @@ echo "[OPTiCS Installer] Cleaning up..."
 rm -rf ./OPTiCS
 echo "[OPTiCS Installer] Repository clone successful."
 sleep 1
+
 echo "[OPTiCS Installer] Docker-compose phase start in 3..."
 sleep 1
 echo "[OPTiCS Installer] Docker-compose phase start in 2..."
 sleep 1
 echo "[OPTiCS Installer] Docker-compose phase start in 1..."
 sleep 1
+
 echo "[OPTiCS Installer] Building agent client and dashboard..."
 cd "$INSTALL_DIR/OPTiCS-AGENT"
-docker compose up --build
+docker compose up --build -d
+
+read -p "[OPTiCS Installer] Do you want to enter Agent console after finish? (y/N): " answer
 echo "[OPTiCS Installer] OPTiCS Agent installment finished."
+if [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
+  docker compose exec optics-agent bash
+fi
+read -p "[OPTiCS Installer] Do you want to remove 'optics-build' folder? (Y/n): " answer
+if [ -z "$answer" ] || [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
+  rm -rf "$INSTALL_DIR"
+fi
 exit 0
