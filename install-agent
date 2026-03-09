@@ -5,9 +5,12 @@ git sparse-checkout init --cone
 git sparse-checkout set ./OPTiCS-AGENT
 git checkout
 mkdir ../OPTiCS-AGENT
-cp ./OPTiCS-AGENT -r ../OPTiCS-AGENT
+cp ./OPTiCS-AGENT -r ../
 cd ..
 rm -rf OPTiCS
-echo "[OPTiCS Installer] Installment successful."
+echo "[OPTiCS Installer] git clone successful."
+echo "[OPTiCS Installer] Now building docker container..."
+cd OPTiCS-AGENT
+docker build -t optics-agent .
 echo "[OPTiCS Installer] OPTiCS Agent installment finished."
 exit 0
