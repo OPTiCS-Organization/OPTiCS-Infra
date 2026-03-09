@@ -1,0 +1,13 @@
+echo "[OPTiCS Installer] Starting clone from github..."
+git clone --no-checkout --depth=1 https://github.com/acorn497/OPTiCS
+cd OPTiCS
+git sparse-checkout init --cone
+git sparse-checkout set ./OPTiCS-AGENT
+git checkout
+mkdir ../OPTiCS-AGENT
+cp ./OPTiCS-AGENT -r ../OPTiCS-AGENT
+cd ..
+rm -rf OPTiCS
+echo "[OPTiCS Installer] Installment successful."
+echo "[OPTiCS Installer] OPTiCS Agent installment finished."
+exit 0
