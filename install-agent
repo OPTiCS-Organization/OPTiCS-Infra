@@ -1,18 +1,19 @@
+INSTALL_DIR="$(pwd)/optics-build"
+
 echo "[OPTiCS Installer] Starting clone from github..."
-git clone --no-checkout --depth=1 https://github.com/acorn497/OPTiCS/tree/1-feat-%EC%97%90%EC%9D%B4%EC%A0%84%ED%8A%B8-%ED%81%B4%EB%9D%BC%EC%9D%B4%EC%96%B8%ED%8A%B8-curl-%EA%B8%B0%EB%B0%98-%EC%9E%90%EB%8F%99-%EC%84%A4%EC%B9%98
+git clone --no-checkout --depth=1 https://github.com/acorn497/OPTiCS
 cd OPTiCS
 git sparse-checkout init --cone
-git sparse-checkout set ./OPTiCS-AGENT ./OPTiCS-AGENT-DASHBOARD
+git sparse-checkout set OPTiCS-AGENT OPTiCS-AGENT-DASHBOARD
 git checkout
-echo "[OPTiCS Installer] Creating directory 'OPTiCS-AGENT'..."
-mkdir ../OPTiCS-AGENT
-echo "[OPTiCS Installer] Creating directory 'OPTiCS-AGENT-DASHBOARD'."
-mkdir ../OPTiCS-AGENT-DASHBOARD
-echo "[OPTiCS Installer] Copying files..." 
-cp ./OPTiCS-AGENT -r ../
-cp ./OPTiCS-AGENT-DASHBOARD -r ../
+
+echo "[OPTiCS Installer] Creating directory 'optics-build'..."
+mkdir -p "$INSTALL_DIR"
+echo "[OPTiCS Installer] Copying files..."
+cp -r ./OPTiCS-AGENT "$INSTALL_DIR"
+cp -r ./OPTiCS-AGENT-DASHBOARD "$INSTALL_DIR"
 cd ..
-echo "[OPTiCS Installer] Cleaning up..." 
+echo "[OPTiCS Installer] Cleaning up..."
 rm -rf ./OPTiCS
 echo "[OPTiCS Installer] Repository clone successful."
 sleep 1
@@ -23,7 +24,7 @@ sleep 1
 echo "[OPTiCS Installer] Docker-compose phase start in 1..."
 sleep 1
 echo "[OPTiCS Installer] Building agent client and dashboard..."
-cd OPTiCS-AGENT
+cd "$INSTALL_DIR/OPTiCS-AGENT"
 docker compose up --build
 echo "[OPTiCS Installer] OPTiCS Agent installment finished."
 exit 0
