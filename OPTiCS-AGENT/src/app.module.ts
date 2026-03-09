@@ -7,7 +7,10 @@ import { PrismaService } from './prisma.service';
 import { InfoGateway } from './socket.gateway';
 
 @Module({
-  imports: [ConfigModule.forRoot(), ScheduleModule.forRoot()],
+  imports: [
+    ConfigModule.forRoot({ ignoreEnvFile: true }),
+    ScheduleModule.forRoot(),
+  ],
   controllers: [AppController],
   providers: [AppService, PrismaService, InfoGateway],
 })

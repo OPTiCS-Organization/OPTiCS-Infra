@@ -12,5 +12,6 @@ echo "[OPTiCS Installer] git clone successful."
 echo "[OPTiCS Installer] Now building docker container..."
 cd OPTiCS-AGENT
 docker build -t optics-agent .
+docker run -d --add-host=host.docker.internal:host-gateway -v $(pwd)/data.db:/app/data.db --env-file .env --name optics_agent -p 3001:3001 optics-agent
 echo "[OPTiCS Installer] OPTiCS Agent installment finished."
 exit 0
