@@ -2,14 +2,22 @@
 
 # OS Detection
 OS=$(uname -s)
-if [ "$OS" = "Linux" ]; then
-  DISTRO=$(. /etc/os-release && echo "$ID")
-  echo "[OPTiCS Installer] Detected OS: $DISTRO"
-elif [ "$OS" = "Darwin" ]; then
-  echo "[OPTiCS Installer] Detected OS: macOS"
-else
-  echo "[OPTiCS Installer] Detected OS: Unknown ($OS)"
-fi
+case "$OS" in
+  Linux*)
+    DISTRO=$(. /etc/os-release && echo "$ID")
+    echo "[OPTiCS Installer] Detected OS: Linux ($DISTRO)"
+    ;;
+  MINGW*|MSYS*|CYGWIN*)
+    OS="Windows"
+    echo "[OPTiCS Installer] Detected OS: Windows"
+    ;;
+  Darwin*)
+    echo "[OPTiCS Installer] Detected OS: macOS"
+    ;;
+  *)
+    echo "[OPTiCS Installer] Detected OS: Unknown ($OS)"
+    ;;
+esac
 
 # Docker Check
 echo "[OPTiCS Installer] Checking Docker version..."
@@ -18,7 +26,25 @@ if [ -z "$DOCKER_VER" ]; then
   read -p "[OPTiCS Installer] Docker is not installed. Do you want to install it? (Y/n): " answer
     if [ -z "$answer" ] || [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
     echo "[OPTiCS Installer] Installing Docker..."
-    # TODO: distro별 설치 로직
+    if [ "$OS" = "Linux" ]; then # :)
+      if [ "$DISTRO" = "arch" ]; then
+        sudo pacman -S --noconfirm docker
+        sudo systemctl enable --now docker
+        sudo usermod -aG docker "$USER"
+        echo "[OPTiCS Installer] Docker installed. You may need to re-login for group changes to take effect."
+      else
+        echo "[OPTiCS Installer] Unsupported Linux distro: $DISTRO. Please install Docker manually."
+        exit 1
+      fi
+    elif [ "$OS" = "Windows" ]; then
+      winget install -e --id Docker.DockerDesktop
+      echo "[OPTiCS Installer] Docker Desktop installed. Please restart your system and re-run this script."
+      exit 0
+    else
+      echo "[OPTiCS Installer] Unsupported OS. Please install Docker manually."
+      exit 1
+    fi
+    
   else
     echo "[OPTiCS Installer] Client install impossible. Aborting..."
     exit 1
@@ -39,7 +65,20 @@ else
   read -p "[OPTiCS Installer] docker-compose is not installed. Do you want to install it? (Y/n): " answer
     if [ -z "$answer" ] || [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
     echo "[OPTiCS Installer] Installing docker-compose..."
-    # TODO: 설치 로직
+    if [ "$OS" = "Linux" ]; then
+      if [ "$DISTRO" = "arch" ]; then
+        sudo pacman -S --noconfirm docker-compose
+      else
+        echo "[OPTiCS Installer] Unsupported Linux distro: $DISTRO. Please install docker-compose manually."
+        exit 1
+      fi
+    elif [ "$OS" = "Windows" ]; then
+      echo "[OPTiCS Installer] Please install Docker Desktop which includes docker-compose."
+      exit 1
+    else
+      echo "[OPTiCS Installer] Unsupported OS. Please install docker-compose manually."
+      exit 1
+    fi
   else
     echo "[OPTiCS Installer] Client install impossible. Aborting..."
     exit 1
