@@ -19,6 +19,8 @@ case "$OS" in
     ;;
 esac
 
+sleep 3
+
 # Docker Check
 echo "[OPTiCS Installer] Checking Docker version..."
 DOCKER_VER=$(docker --version 2>/dev/null)
@@ -112,14 +114,48 @@ sleep 1
 echo "[OPTiCS Installer] Docker-compose phase start in 1..."
 sleep 1
 
+# Port conflict check helper
+check_port() {
+  local port=$1
+  ss -tlnH 2>/dev/null | awk '{print $4}' | grep -qE "(^|:)${port}$"
+}
+
+echo "[OPTiCS Installer] Checking ports..."
+
+AGENT_PORT=3001
+while check_port "$AGENT_PORT"; do
+  echo "[OPTiCS Installer] Port $AGENT_PORT is already in use (optics-agent)."
+  read -p "[OPTiCS Installer] Enter a different port for optics-agent: " input </dev/tty
+  if [ -n "$input" ]; then
+    AGENT_PORT=$input
+  fi
+done
+
+DASHBOARD_PORT=5173
+while check_port "$DASHBOARD_PORT"; do
+  echo "[OPTiCS Installer] Port $DASHBOARD_PORT is already in use (optics-agent-dashboard)."
+  read -p "[OPTiCS Installer] Enter a different port for optics-agent-dashboard: " input </dev/tty
+  if [ -n "$input" ]; then
+    DASHBOARD_PORT=$input
+  fi
+done
+
+echo "[OPTiCS Installer] Using ports: agent=$AGENT_PORT, dashboard=$DASHBOARD_PORT"
+
 echo "[OPTiCS Installer] Building agent client and dashboard..."
 cd "$INSTALL_DIR/OPTiCS-AGENT"
-docker compose up --build -d
+printf "AGENT_PORT=%s\nDASHBOARD_PORT=%s\n" "$AGENT_PORT" "$DASHBOARD_PORT" > .env.ports
+AGENT_PORT="$AGENT_PORT" DASHBOARD_PORT="$DASHBOARD_PORT" docker compose --env-file .env.ports up --build -d
+rm -f .env.ports
 
-read -p "[OPTiCS Installer] Do you want to enter Agent console after finish? (y/N): " answer
 echo "[OPTiCS Installer] OPTiCS Agent installment finished."
+read -p "[OPTiCS Installer] Do you want to enter Agent console after finish? (y/N): " answer
 if [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
-  docker compose exec optics-agent bash
+  if docker compose ps --status running | grep -q optics-agent; then
+    docker compose exec optics-agent sh
+  else
+    echo "[OPTiCS Installer] Agent container is not running. Check logs with: docker compose logs optics-agent"
+  fi
 fi
 read -p "[OPTiCS Installer] Do you want to remove 'optics-build' folder? (Y/n): " answer
 if [ -z "$answer" ] || [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
