@@ -92,7 +92,7 @@ INSTALL_DIR="$(pwd)/optics-build"
 echo "[OPTiCS Installer] Starting clone from github..."
 mkdir OPTiCS
 cd OPTiCS
-git clone -b "1-refactor-need-re-route-docker-compose-relative-path" https://github.com/OPTiCS-Organization/OPTiCS-Agent OPTiCS-Agent
+git clone https://github.com/OPTiCS-Organization/OPTiCS-Agent OPTiCS-Agent
 git clone https://github.com/OPTiCS-Organization/OPTiCS-Agent-Dashboard OPTiCS-Agent-Dashboard
 
 echo "[OPTiCS Installer] Creating directory 'optics-build'..."
