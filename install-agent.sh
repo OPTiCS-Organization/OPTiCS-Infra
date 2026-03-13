@@ -90,17 +90,16 @@ fi
 INSTALL_DIR="$(pwd)/optics-build"
 
 echo "[OPTiCS Installer] Starting clone from github..."
-git clone --no-checkout --depth=1 https://github.com/acorn497/OPTiCS
+mkdir OPTiCS
 cd OPTiCS
-git sparse-checkout init --cone
-git sparse-checkout set OPTiCS-AGENT OPTiCS-AGENT-DASHBOARD
-git checkout
+git clone -b "1-refactor-need-re-route-docker-compose-relative-path" https://github.com/OPTiCS-Organization/OPTiCS-Agent OPTiCS-Agent
+git clone https://github.com/OPTiCS-Organization/OPTiCS-Agent-Dashboard OPTiCS-Agent-Dashboard
 
 echo "[OPTiCS Installer] Creating directory 'optics-build'..."
 mkdir -p "$INSTALL_DIR"
 echo "[OPTiCS Installer] Copying files..."
-cp -r ./OPTiCS-AGENT "$INSTALL_DIR"
-cp -r ./OPTiCS-AGENT-DASHBOARD "$INSTALL_DIR"
+cp -r ./OPTiCS-Agent "$INSTALL_DIR"
+cp -r ./OPTiCS-Agent-Dashboard "$INSTALL_DIR"
 cd ..
 echo "[OPTiCS Installer] Cleaning up..."
 rm -rf ./OPTiCS
@@ -143,7 +142,7 @@ done
 echo "[OPTiCS Installer] Using ports: agent=$AGENT_PORT, dashboard=$DASHBOARD_PORT"
 
 echo "[OPTiCS Installer] Building agent client and dashboard..."
-cd "$INSTALL_DIR/OPTiCS-AGENT"
+cd "$INSTALL_DIR/OPTiCS-Agent"
 printf "AGENT_PORT=%s\nDASHBOARD_PORT=%s\n" "$AGENT_PORT" "$DASHBOARD_PORT" > .env.ports
 AGENT_PORT="$AGENT_PORT" DASHBOARD_PORT="$DASHBOARD_PORT" docker compose --env-file .env.ports up --build -d
 rm -f .env.ports
