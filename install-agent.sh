@@ -121,7 +121,7 @@ check_port() {
 
 echo "[OPTiCS Installer] Checking ports..."
 
-AGENT_PORT=3001
+AGENT_PORT=5230
 while check_port "$AGENT_PORT"; do
   echo "[OPTiCS Installer] Port $AGENT_PORT is already in use (optics-agent)."
   read -p "[OPTiCS Installer] Enter a different port for optics-agent: " input </dev/tty
@@ -130,7 +130,7 @@ while check_port "$AGENT_PORT"; do
   fi
 done
 
-DASHBOARD_PORT=5173
+DASHBOARD_PORT=5240
 while check_port "$DASHBOARD_PORT"; do
   echo "[OPTiCS Installer] Port $DASHBOARD_PORT is already in use (optics-agent-dashboard)."
   read -p "[OPTiCS Installer] Enter a different port for optics-agent-dashboard: " input </dev/tty
