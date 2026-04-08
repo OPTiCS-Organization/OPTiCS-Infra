@@ -144,6 +144,9 @@ AGENT_PORT="$AGENT_PORT" DASHBOARD_PORT="$DASHBOARD_PORT" docker compose --env-f
 rm -f .env.ports
 
 echo "[OPTiCS Installer] OPTiCS Agent installment finished."
+echo ""
+echo "    To access dashboard: http://localhost:$DASHBOARD_PORT/"
+echo ""
 read -p "[OPTiCS Installer] Do you want to enter Agent console after finish? (y/N): " answer
 if [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
   if docker compose ps --status running | grep -q optics-agent; then
