@@ -1,21 +1,24 @@
 #!/bin/bash
+echo "Welcome to OPTiCS Linux Installer v0.0.1!"
 
 # OS Detection
 OS=$(uname -s)
+CONTINUE_INSTALLATION=0
 case "$OS" in
   Linux*)
     DISTRO=$(. /etc/os-release && echo "$ID")
     echo "[OPTiCS Installer] Detected OS: Linux ($DISTRO)"
     ;;
-  MINGW*|MSYS*|CYGWIN*)
-    OS="Windows"
-    echo "[OPTiCS Installer] Detected OS: Windows"
-    ;;
-  Darwin*)
-    echo "[OPTiCS Installer] Detected OS: macOS"
-    ;;
   *)
-    echo "[OPTiCS Installer] Detected OS: Unknown ($OS)"
+    echo "[OPTiCS Installer] Detected OS: $OS (Unsupported)"
+    echo "[Notice] OPTiCS will not get any responsibility about your PC when script got fail."
+    read -p "[OPTiCS Installer] $OS is unsupported OS in this script. Continue download anyway? (y/N): " answer
+    if [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
+      echo "[OPTiCS Installer] Continuing installation process..."
+    else
+      echo "[OPTiCS Installer] Aborting installation process..."
+      exit
+    fi
     ;;
 esac
 
@@ -38,17 +41,13 @@ if [ -z "$DOCKER_VER" ]; then
         echo "[OPTiCS Installer] Unsupported Linux distro: $DISTRO. Please install Docker manually."
         exit 1
       fi
-    elif [ "$OS" = "Windows" ]; then
-      winget install -e --id Docker.DockerDesktop
-      echo "[OPTiCS Installer] Docker Desktop installed. Please restart your system and re-run this script."
-      exit 0
     else
       echo "[OPTiCS Installer] Unsupported OS. Please install Docker manually."
       exit 1
     fi
     
   else
-    echo "[OPTiCS Installer] Client install impossible. Aborting..."
+    echo "[OPTiCS Installer] Client install unavailable. Aborting..."
     exit 1
   fi
 else
@@ -74,15 +73,12 @@ else
         echo "[OPTiCS Installer] Unsupported Linux distro: $DISTRO. Please install docker-compose manually."
         exit 1
       fi
-    elif [ "$OS" = "Windows" ]; then
-      echo "[OPTiCS Installer] Please install Docker Desktop which includes docker-compose."
-      exit 1
     else
       echo "[OPTiCS Installer] Unsupported OS. Please install docker-compose manually."
       exit 1
     fi
   else
-    echo "[OPTiCS Installer] Client install impossible. Aborting..."
+    echo "[OPTiCS Installer] Client install unavailable. Aborting..."
     exit 1
   fi
 fi
