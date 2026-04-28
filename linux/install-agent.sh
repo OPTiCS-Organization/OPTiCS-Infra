@@ -1,5 +1,5 @@
 #!/bin/bash
-echo "Welcome to OPTiCS Linux Installer v0.0.1!"
+echo "Welcome to OPTiCS Linux Installer v0.0.2!"
 
 # OS Detection
 OS=$(uname -s)
@@ -12,7 +12,7 @@ case "$OS" in
   *)
     echo "[OPTiCS Installer] Detected OS: $OS (Unsupported)"
     echo "[Notice] OPTiCS will not get any responsibility about your PC when script got fail."
-    read -p "[OPTiCS Installer] $OS is unsupported OS in this script. Continue download anyway? (y/N): " answer
+    read -p "[OPTiCS Installer] $OS is unsupported OS in this script. Continue installation anyway? (y/N): " answer
     if [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
       echo "[OPTiCS Installer] Continuing installation process..."
     else
@@ -45,7 +45,6 @@ if [ -z "$DOCKER_VER" ]; then
       echo "[OPTiCS Installer] Unsupported OS. Please install Docker manually."
       exit 1
     fi
-    
   else
     echo "[OPTiCS Installer] Client install unavailable. Aborting..."
     exit 1
@@ -115,11 +114,13 @@ check_port() {
   ss -tlnH 2>/dev/null | awk '{print $4}' | grep -qE "(^|:)${port}$"
 }
 
+echo "[OPTiCS Installer] Checking optics agent process..."
+
 echo "[OPTiCS Installer] Checking ports..."
 
 AGENT_PORT=5230
 while check_port "$AGENT_PORT"; do
-  echo "[OPTiCS Installer] Port $AGENT_PORT is already in use (optics-agent)."
+  echo "[OPTiCS Installer] Port $AGENT_PORT is already in use."
   read -p "[OPTiCS Installer] Enter a different port for optics-agent: " input </dev/tty
   if [ -n "$input" ]; then
     AGENT_PORT=$input
