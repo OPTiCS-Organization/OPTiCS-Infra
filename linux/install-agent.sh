@@ -1,5 +1,5 @@
 #!/bin/bash
-echo "Welcome to OPTiCS Linux Installer v0.1.0!"
+echo "Welcome to OPTiCS Linux Installer v0.2.0!"
 
 # OS Detection
 OS=$(uname -s)
