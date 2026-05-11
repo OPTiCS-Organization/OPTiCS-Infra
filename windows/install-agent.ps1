@@ -1,4 +1,4 @@
-Write-Host "Welcome to OPTiCS Windows Installer v0.0.1"
+Write-Host "Welcome to OPTiCS Windows Installer v0.1.0"
 
 Start-Sleep 1
 $installAgree = Read-Host "[OPTiCS Installer] Are you sure want to install OPTiCS Agent on your PC? (y/N)"
