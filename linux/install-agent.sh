@@ -1,5 +1,5 @@
 #!/bin/bash
-echo "Welcome to OPTiCS Linux Installer v0.3.0!"
+echo "Welcome to OPTiCS Linux Installer v0.3.1!"
 
 # OS Detection
 OS=$(uname -s)
@@ -214,6 +214,12 @@ echo "[OPTiCS Installer] Cleaning up..."
 rm -rf ./OPTiCS
 echo "[OPTiCS Installer] Repository clone successful."
 sleep 1
+
+# .env는 비밀값을 담을 수 있어 git에 커밋하지 않는다. 클론 직후엔 없는 게 정상이니 예시 파일로 채워준다.
+if [ ! -f "$INSTALL_DIR/OPTiCS-Agent/.env" ]; then
+  echo "[OPTiCS Installer] .env not found, creating from .env.example..."
+  cp "$INSTALL_DIR/OPTiCS-Agent/.env.example" "$INSTALL_DIR/OPTiCS-Agent/.env"
+fi
 
 if configure_host_ssh; then
   SSH_CONFIGURED=1
