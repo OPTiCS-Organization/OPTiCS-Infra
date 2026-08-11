@@ -1,4 +1,4 @@
-Write-Host "Welcome to OPTiCS Windows Installer v0.2.0"
+Write-Host "Welcome to OPTiCS Windows Installer v0.2.1"
 
 Start-Sleep 1
 $installAgree = Read-Host "[OPTiCS Installer] Are you sure want to install OPTiCS Agent on your PC? (y/N)"
@@ -105,6 +105,14 @@ Pop-Location
 
 Write-Host "[OPTiCS Installer] Repository clone successful."
 Start-Sleep 1
+
+# .env는 비밀값을 담을 수 있어 git에 커밋하지 않는다. 클론 직후엔 없는 게 정상이니 예시 파일로 채워준다.
+$envPath = "$INSTALL_DIR/OPTiCS-Agent/.env"
+if (-not (Test-Path $envPath)) {
+    Write-Host "[OPTiCS Installer] .env not found, creating from .env.example..."
+    Copy-Item -Path "$INSTALL_DIR/OPTiCS-Agent/.env.example" -Destination $envPath
+}
+
 Write-Host "[OPTiCS Installer] Docker-compose phase start in 3..."
 Start-Sleep 1
 Write-Host "[OPTiCS Installer] Docker-compose phase start in 2..."
