@@ -1,5 +1,5 @@
 #!/bin/bash
-echo "Welcome to OPTiCS Linux Installer v0.3.2!"
+echo "Welcome to OPTiCS Linux Installer v0.3.3!"
 
 # OS Detection
 OS=$(uname -s)
@@ -271,7 +271,11 @@ check_port() {
   ss -tlnH 2>/dev/null | awk '{print $4}' | grep -qE "(^|:)${port}$"
 }
 
-echo "[OPTiCS Installer] Checking optics agent process..."
+echo "[OPTiCS Installer] Checking for existing OPTiCS Agent containers..."
+if (cd "$INSTALL_DIR/OPTiCS-Agent" && $COMPOSE_CMD ps -q 2>/dev/null | grep -q .); then
+  echo "[OPTiCS Installer] Existing OPTiCS Agent containers are running. Stopping them to continue with the update..."
+  (cd "$INSTALL_DIR/OPTiCS-Agent" && $COMPOSE_CMD down)
+fi
 
 echo "[OPTiCS Installer] Checking ports..."
 
