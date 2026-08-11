@@ -1,9 +1,8 @@
 #!/bin/bash
-echo "Welcome to OPTiCS Linux Installer v0.3.1!"
+echo "Welcome to OPTiCS Linux Installer v0.3.2!"
 
 # OS Detection
 OS=$(uname -s)
-CONTINUE_INSTALLATION=0
 case "$OS" in
   Linux*)
     DISTRO=$(. /etc/os-release && echo "$ID")
@@ -68,6 +67,7 @@ else
     if [ "$OS" = "Linux" ]; then
       if [ "$DISTRO" = "arch" ]; then
         sudo pacman -S --noconfirm docker-compose
+        COMPOSE_CMD="docker-compose"
       else
         echo "[OPTiCS Installer] Unsupported Linux distro: $DISTRO. Please install docker-compose manually."
         exit 1
@@ -80,6 +80,32 @@ else
     echo "[OPTiCS Installer] Client install unavailable. Aborting..."
     exit 1
   fi
+fi
+
+# Node Check
+echo "[OPTiCS Installer] Checking Node.js version..."
+NODE_VER=$(node --version 2>/dev/null)
+if [ -z "$NODE_VER" ]; then
+  read -p "[OPTiCS Installer] Node.js is not installed. Do you want to install it? (Y/n): " answer
+    if [ -z "$answer" ] || [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
+    echo "[OPTiCS Installer] Installing Node.js..."
+    if [ "$OS" = "Linux" ]; then
+      if [ "$DISTRO" = "arch" ]; then
+        sudo pacman -S --noconfirm nodejs npm
+      else
+        echo "[OPTiCS Installer] Unsupported Linux distro: $DISTRO. Please install Node.js manually."
+        exit 1
+      fi
+    else
+      echo "[OPTiCS Installer] Unsupported OS. Please install Node.js manually."
+      exit 1
+    fi
+  else
+    echo "[OPTiCS Installer] Node.js is required. Aborting..."
+    exit 1
+  fi
+else
+  echo "[OPTiCS Installer] Node detected: $NODE_VER"
 fi
 
 INSTALL_DIR="$(pwd)/optics-build"
@@ -199,7 +225,7 @@ configure_host_ssh() {
 
 echo "[OPTiCS Installer] Starting clone from github..."
 echo "[OPTiCS Installer] Creating directory 'OPTiCS'..."
-mkdir OPTiCS
+mkdir -p OPTiCS
 cd OPTiCS
 git clone https://github.com/OPTiCS-Organization/OPTiCS-Agent OPTiCS-Agent
 git clone https://github.com/OPTiCS-Organization/OPTiCS-Agent-Dashboard OPTiCS-Agent-Dashboard
@@ -221,10 +247,15 @@ if [ ! -f "$INSTALL_DIR/OPTiCS-Agent/.env" ]; then
   cp "$INSTALL_DIR/OPTiCS-Agent/.env.example" "$INSTALL_DIR/OPTiCS-Agent/.env"
 fi
 
-if configure_host_ssh; then
-  SSH_CONFIGURED=1
+read -p "[OPTiCS Installer] Enable Web SSH terminal access? This configures sshd, generates a dedicated key, and adds it to authorized_keys. (y/N): " sshAnswer
+if [ "$sshAnswer" = "Y" ] || [ "$sshAnswer" = "y" ]; then
+  if configure_host_ssh; then
+    SSH_CONFIGURED=1
+  else
+    echo "[OPTiCS Installer] Web SSH terminal setup failed. Agent installation will continue without it."
+  fi
 else
-  echo "[OPTiCS Installer] Agent installation will continue without Web SSH access."
+  echo "[OPTiCS Installer] Skipping Web SSH terminal setup (declined)."
 fi
 
 echo "[OPTiCS Installer] Docker-compose phase start in 3..."
@@ -270,7 +301,7 @@ printf "AGENT_PORT=%s\nDASHBOARD_PORT=%s\n" "$AGENT_PORT" "$DASHBOARD_PORT" > .e
 if [ "$SSH_CONFIGURED" -eq 1 ]; then
   printf "HOST_SSH_PRIVATE_KEY_FILE=%s\n" "$SSH_PRIVATE_KEY" >> .env.ports
 fi
-AGENT_PORT="$AGENT_PORT" DASHBOARD_PORT="$DASHBOARD_PORT" docker compose --env-file .env.ports up --build -d
+AGENT_PORT="$AGENT_PORT" DASHBOARD_PORT="$DASHBOARD_PORT" $COMPOSE_CMD --env-file .env.ports up --build -d
 rm -f .env.ports
 
 echo "[OPTiCS Installer] OPTiCS Agent installment finished."
@@ -279,10 +310,10 @@ echo "    To access dashboard: http://localhost:$DASHBOARD_PORT/"
 echo ""
 read -p "[OPTiCS Installer] Do you want to enter Agent console after finish? (y/N): " answer
 if [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
-  if docker compose ps --status running | grep -q optics-agent; then
-    docker compose exec optics-agent sh
+  if $COMPOSE_CMD ps --status running | grep -q optics-agent; then
+    $COMPOSE_CMD exec optics-agent sh
   else
-    echo "[OPTiCS Installer] Agent container is not running. Check logs with: docker compose logs optics-agent"
+    echo "[OPTiCS Installer] Agent container is not running. Check logs with: $COMPOSE_CMD logs optics-agent"
   fi
 fi
 read -p "[OPTiCS Installer] Do you want to remove 'optics-build' folder? (Y/n): " answer
