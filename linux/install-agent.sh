@@ -1,12 +1,60 @@
 #!/bin/bash
-echo "Welcome to OPTiCS Linux Installer v0.3.3!"
+#
+# OPTiCS Agent Linux Installer
+#
+# 0.6.0부터 Agent와 Dashboard는 소스를 빌드하지 않고 GHCR에 게시된 이미지를 받아 씁니다.
+# 그래서 이 스크립트가 내려받는 것은 docker-compose.yml과 .env.example 두 개뿐이고,
+# Node.js도 git도 필요하지 않습니다.
+#
+# 설치 디렉터리는 지워지지 않고 남습니다. compose 파일이 곧 이 설치의 실체이므로,
+# 지우면 이후에 컨테이너를 멈추거나 업데이트할 방법이 사라집니다.
+set -uo pipefail
 
-# OS Detection
+INSTALLER_VERSION="0.4.0"
+echo "Welcome to OPTiCS Linux Installer v${INSTALLER_VERSION}!"
+
+AGENT_REPO_RAW="https://raw.githubusercontent.com/OPTiCS-Organization/OPTiCS-Agent/main"
+INSTALL_DIR="${OPTICS_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/optics/agent}"
+SSH_KEY_MARKER="optics-agent-web-terminal"
+SSH_CONFIGURED=0
+SSH_PRIVATE_KEY=""
+
+# ---------------------------------------------------------------------------
+# OS 판별
+# ---------------------------------------------------------------------------
+
 OS=$(uname -s)
+DISTRO=""
+# 패키지 관리자로 갈래를 나눈다. 배포판 이름을 하나하나 나열하면 파생 배포판이 나올 때마다 늘어난다.
+PKG=""
+
 case "$OS" in
   Linux*)
-    DISTRO=$(. /etc/os-release && echo "$ID")
-    echo "[OPTiCS Installer] Detected OS: Linux ($DISTRO)"
+    if [ -r /etc/os-release ]; then
+      DISTRO=$(. /etc/os-release && echo "$ID")
+      DISTRO_LIKE=$(. /etc/os-release && echo "${ID_LIKE:-}")
+    fi
+    echo "[OPTiCS Installer] Detected OS: Linux (${DISTRO:-unknown})"
+
+    case " $DISTRO $DISTRO_LIKE " in
+      *" arch "*)   PKG="pacman" ;;
+      *" debian "*|*" ubuntu "*) PKG="apt" ;;
+    esac
+
+    if [ -z "$PKG" ]; then
+      case "$DISTRO" in
+        arch|manjaro|endeavouros|garuda) PKG="pacman" ;;
+        ubuntu|debian|linuxmint|pop|elementary) PKG="apt" ;;
+      esac
+    fi
+
+    if [ -z "$PKG" ]; then
+      echo "[OPTiCS Installer] Unsupported Linux distro: ${DISTRO:-unknown}"
+      echo "[OPTiCS Installer] Supported: Arch-based (pacman), Ubuntu/Debian-based (apt)"
+      echo "[OPTiCS Installer] Install Docker and the Compose plugin manually, then run this script again."
+      exit 1
+    fi
+    echo "[OPTiCS Installer] Package manager: $PKG"
     ;;
   *)
     echo "[OPTiCS Installer] Detected OS: $OS (Unsupported)"
@@ -16,102 +64,124 @@ case "$OS" in
       echo "[OPTiCS Installer] Continuing installation process..."
     else
       echo "[OPTiCS Installer] Aborting installation process..."
-      exit
+      exit 1
     fi
     ;;
 esac
 
-sleep 3
+sleep 1
 
-# Docker Check
+# ---------------------------------------------------------------------------
+# 의존성
+# ---------------------------------------------------------------------------
+
+# curl은 compose 파일을 받는 데 쓴다. 없으면 아무것도 시작할 수 없다.
+if ! command -v curl >/dev/null 2>&1; then
+  echo "[OPTiCS Installer] Installing curl..."
+  case "$PKG" in
+    pacman) sudo pacman -S --needed --noconfirm curl ;;
+    apt)    sudo apt-get update && sudo apt-get install -y curl ;;
+  esac
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "[OPTiCS Installer] curl is required. Aborting..."
+    exit 1
+  fi
+fi
+
+install_docker() {
+  case "$PKG" in
+    pacman)
+      sudo pacman -S --needed --noconfirm docker docker-compose || return 1
+      ;;
+    apt)
+      # Ubuntu/Debian 기본 저장소의 docker.io는 Compose 플러그인을 함께 주지 않는 판이 있어,
+      # 버전에 상관없이 동일하게 동작하는 Docker 공식 저장소를 쓴다.
+      sudo apt-get update || return 1
+      sudo apt-get install -y ca-certificates curl gnupg || return 1
+      sudo install -m 0755 -d /etc/apt/keyrings || return 1
+
+      local repo_id="$DISTRO"
+      case " $DISTRO $DISTRO_LIKE " in
+        *" ubuntu "*) repo_id="ubuntu" ;;
+        *" debian "*) repo_id="debian" ;;
+      esac
+      [ "$DISTRO" = "ubuntu" ] && repo_id="ubuntu"
+      [ "$DISTRO" = "debian" ] && repo_id="debian"
+
+      curl -fsSL "https://download.docker.com/linux/${repo_id}/gpg" \
+        | sudo gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg || return 1
+      sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+      # 파생 배포판은 자기 코드네임을 쓰므로 upstream 코드네임(UBUNTU_CODENAME)을 우선한다.
+      local codename
+      codename=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${DEBIAN_CODENAME:-$VERSION_CODENAME}}")
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${repo_id} ${codename} stable" \
+        | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null || return 1
+
+      sudo apt-get update || return 1
+      sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1
+      ;;
+  esac
+
+  sudo systemctl enable --now docker || return 1
+  sudo usermod -aG docker "$USER"
+  echo "[OPTiCS Installer] Docker installed. You may need to re-login for group changes to take effect."
+  return 0
+}
+
 echo "[OPTiCS Installer] Checking Docker version..."
 DOCKER_VER=$(docker --version 2>/dev/null)
 if [ -z "$DOCKER_VER" ]; then
   read -p "[OPTiCS Installer] Docker is not installed. Do you want to install it? (Y/n): " answer
-    if [ -z "$answer" ] || [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
+  if [ -z "$answer" ] || [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
     echo "[OPTiCS Installer] Installing Docker..."
-    if [ "$OS" = "Linux" ]; then # :)
-      if [ "$DISTRO" = "arch" ]; then
-        sudo pacman -S --noconfirm docker
-        sudo systemctl enable --now docker
-        sudo usermod -aG docker "$USER"
-        echo "[OPTiCS Installer] Docker installed. You may need to re-login for group changes to take effect."
-      else
-        echo "[OPTiCS Installer] Unsupported Linux distro: $DISTRO. Please install Docker manually."
-        exit 1
-      fi
-    else
-      echo "[OPTiCS Installer] Unsupported OS. Please install Docker manually."
+    if ! install_docker; then
+      echo "[OPTiCS Installer] Docker installation failed. Please install it manually."
       exit 1
     fi
   else
-    echo "[OPTiCS Installer] Client install unavailable. Aborting..."
+    echo "[OPTiCS Installer] Docker is required. Aborting..."
     exit 1
   fi
 else
   echo "[OPTiCS Installer] Docker detected: $DOCKER_VER"
 fi
 
-# Docker Compose Check
-echo "[OPTiCS Installer] Checking docker-compose version..."
-if command -v docker-compose &>/dev/null; then
-  COMPOSE_CMD="docker-compose"
-  echo "[OPTiCS Installer] docker-compose detected: $(docker-compose --version)"
-elif docker compose version &>/dev/null 2>&1; then
+echo "[OPTiCS Installer] Checking Docker Compose version..."
+# 플러그인형(docker compose)을 먼저 본다. 독립 실행형 docker-compose는 v1일 수 있고,
+# v1은 compose 파일의 일부 문법을 해석하지 못한다.
+if docker compose version >/dev/null 2>&1; then
   COMPOSE_CMD="docker compose"
   echo "[OPTiCS Installer] docker compose (plugin) detected: $(docker compose version)"
+elif command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE_CMD="docker-compose"
+  echo "[OPTiCS Installer] docker-compose detected: $(docker-compose --version)"
 else
-  read -p "[OPTiCS Installer] docker-compose is not installed. Do you want to install it? (Y/n): " answer
-    if [ -z "$answer" ] || [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
-    echo "[OPTiCS Installer] Installing docker-compose..."
-    if [ "$OS" = "Linux" ]; then
-      if [ "$DISTRO" = "arch" ]; then
-        sudo pacman -S --noconfirm docker-compose
-        COMPOSE_CMD="docker-compose"
-      else
-        echo "[OPTiCS Installer] Unsupported Linux distro: $DISTRO. Please install docker-compose manually."
-        exit 1
-      fi
+  read -p "[OPTiCS Installer] Docker Compose is not installed. Do you want to install it? (Y/n): " answer
+  if [ -z "$answer" ] || [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
+    echo "[OPTiCS Installer] Installing Docker Compose..."
+    case "$PKG" in
+      pacman) sudo pacman -S --needed --noconfirm docker-compose ;;
+      apt)    sudo apt-get update && sudo apt-get install -y docker-compose-plugin ;;
+    esac
+
+    if docker compose version >/dev/null 2>&1; then
+      COMPOSE_CMD="docker compose"
+    elif command -v docker-compose >/dev/null 2>&1; then
+      COMPOSE_CMD="docker-compose"
     else
-      echo "[OPTiCS Installer] Unsupported OS. Please install docker-compose manually."
+      echo "[OPTiCS Installer] Docker Compose installation failed. Please install it manually."
       exit 1
     fi
   else
-    echo "[OPTiCS Installer] Client install unavailable. Aborting..."
+    echo "[OPTiCS Installer] Docker Compose is required. Aborting..."
     exit 1
   fi
 fi
 
-# Node Check
-echo "[OPTiCS Installer] Checking Node.js version..."
-NODE_VER=$(node --version 2>/dev/null)
-if [ -z "$NODE_VER" ]; then
-  read -p "[OPTiCS Installer] Node.js is not installed. Do you want to install it? (Y/n): " answer
-    if [ -z "$answer" ] || [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
-    echo "[OPTiCS Installer] Installing Node.js..."
-    if [ "$OS" = "Linux" ]; then
-      if [ "$DISTRO" = "arch" ]; then
-        sudo pacman -S --noconfirm nodejs npm
-      else
-        echo "[OPTiCS Installer] Unsupported Linux distro: $DISTRO. Please install Node.js manually."
-        exit 1
-      fi
-    else
-      echo "[OPTiCS Installer] Unsupported OS. Please install Node.js manually."
-      exit 1
-    fi
-  else
-    echo "[OPTiCS Installer] Node.js is required. Aborting..."
-    exit 1
-  fi
-else
-  echo "[OPTiCS Installer] Node detected: $NODE_VER"
-fi
-
-INSTALL_DIR="$(pwd)/optics-build"
-SSH_KEY_MARKER="optics-agent-web-terminal"
-SSH_CONFIGURED=0
-SSH_PRIVATE_KEY=""
+# ---------------------------------------------------------------------------
+# 헬퍼
+# ---------------------------------------------------------------------------
 
 run_as_ssh_user() {
   if [ "$(id -un)" = "$SSH_TARGET_USER" ]; then
@@ -124,7 +194,7 @@ run_as_ssh_user() {
 set_agent_env() {
   local key="$1"
   local value="$2"
-  local env_file="$INSTALL_DIR/OPTiCS-Agent/.env"
+  local env_file="$INSTALL_DIR/.env"
 
   if grep -q "^${key}=" "$env_file" 2>/dev/null; then
     sed -i "s|^${key}=.*|${key}=${value}|" "$env_file"
@@ -137,16 +207,15 @@ configure_host_ssh() {
   echo "[OPTiCS Installer] Configuring Agent host SSH access..."
 
   if ! command -v ssh-keygen >/dev/null 2>&1 || ! command -v sshd >/dev/null 2>&1; then
-    if [ "$DISTRO" = "arch" ]; then
-      echo "[OPTiCS Installer] Installing OpenSSH..."
-      sudo pacman -S --needed --noconfirm openssh || return 1
-    else
-      echo "[OPTiCS Installer] OpenSSH is required. Install and start sshd, then run the installer again."
-      return 1
-    fi
+    echo "[OPTiCS Installer] Installing OpenSSH..."
+    case "$PKG" in
+      pacman) sudo pacman -S --needed --noconfirm openssh || return 1 ;;
+      apt)    sudo apt-get install -y openssh-server openssh-client || return 1 ;;
+    esac
   fi
 
   if command -v systemctl >/dev/null 2>&1 && ! pgrep -x sshd >/dev/null 2>&1; then
+    # 유닛 이름이 배포판마다 다르다. Arch는 sshd, Debian 계열은 ssh.
     if systemctl list-unit-files sshd.service --no-legend 2>/dev/null | grep -q sshd.service; then
       sudo systemctl enable --now sshd || return 1
     elif systemctl list-unit-files ssh.service --no-legend 2>/dev/null | grep -q ssh.service; then
@@ -223,29 +292,46 @@ configure_host_ssh() {
   return 0
 }
 
-echo "[OPTiCS Installer] Starting clone from github..."
-echo "[OPTiCS Installer] Creating directory 'OPTiCS'..."
-mkdir -p OPTiCS
-cd OPTiCS
-git clone https://github.com/OPTiCS-Organization/OPTiCS-Agent OPTiCS-Agent
-git clone https://github.com/OPTiCS-Organization/OPTiCS-Agent-Dashboard OPTiCS-Agent-Dashboard
+fetch() {
+  local url="$1"
+  local dest="$2"
+  if ! curl -fsSL "$url" -o "$dest"; then
+    echo "[OPTiCS Installer] Failed to download: $url"
+    return 1
+  fi
+  return 0
+}
 
-echo "[OPTiCS Installer] Creating directory 'OPTiCS/optics-build'..."
+# ---------------------------------------------------------------------------
+# 설치 파일 준비
+# ---------------------------------------------------------------------------
+
+echo "[OPTiCS Installer] Install directory: $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
-echo "[OPTiCS Installer] Copying files..."
-cp -r ./OPTiCS-Agent "$INSTALL_DIR"
-cp -r ./OPTiCS-Agent-Dashboard "$INSTALL_DIR"
-cd ..
-echo "[OPTiCS Installer] Cleaning up..."
-rm -rf ./OPTiCS
-echo "[OPTiCS Installer] Repository clone successful."
-sleep 1
 
-# .env는 비밀값을 담을 수 있어 git에 커밋하지 않는다. 클론 직후엔 없는 게 정상이니 예시 파일로 채워준다.
-if [ ! -f "$INSTALL_DIR/OPTiCS-Agent/.env" ]; then
-  echo "[OPTiCS Installer] .env not found, creating from .env.example..."
-  cp "$INSTALL_DIR/OPTiCS-Agent/.env.example" "$INSTALL_DIR/OPTiCS-Agent/.env"
+# 기존 설치 위에 덮어쓰는 경우, 먼저 컨테이너를 멈춰야 이미지 교체가 안전하다.
+if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
+  echo "[OPTiCS Installer] Existing installation found. Checking for running containers..."
+  if (cd "$INSTALL_DIR" && $COMPOSE_CMD ps -q 2>/dev/null | grep -q .); then
+    echo "[OPTiCS Installer] Stopping existing OPTiCS Agent containers..."
+    (cd "$INSTALL_DIR" && $COMPOSE_CMD down)
+  fi
 fi
+
+echo "[OPTiCS Installer] Downloading compose definition..."
+fetch "$AGENT_REPO_RAW/docker-compose.yml" "$INSTALL_DIR/docker-compose.yml" || exit 1
+
+# .env는 비밀값과 사용자 설정을 담으므로 이미 있으면 덮어쓰지 않는다.
+# 재설치할 때마다 초기화되면 SSH 설정과 Hub 주소가 매번 날아간다.
+if [ -f "$INSTALL_DIR/.env" ]; then
+  echo "[OPTiCS Installer] Existing .env found. Keeping it."
+else
+  echo "[OPTiCS Installer] Downloading .env.example..."
+  fetch "$AGENT_REPO_RAW/.env.example" "$INSTALL_DIR/.env" || exit 1
+  echo "[OPTiCS Installer] Created .env from .env.example."
+fi
+
+sleep 1
 
 read -p "[OPTiCS Installer] Enable Web SSH terminal access? This configures sshd, generates a dedicated key, and adds it to authorized_keys. (y/N): " sshAnswer
 if [ "$sshAnswer" = "Y" ] || [ "$sshAnswer" = "y" ]; then
@@ -258,24 +344,21 @@ else
   echo "[OPTiCS Installer] Skipping Web SSH terminal setup (declined)."
 fi
 
-echo "[OPTiCS Installer] Docker-compose phase start in 3..."
-sleep 1
-echo "[OPTiCS Installer] Docker-compose phase start in 2..."
-sleep 1
-echo "[OPTiCS Installer] Docker-compose phase start in 1..."
-sleep 1
+# ---------------------------------------------------------------------------
+# 포트
+# ---------------------------------------------------------------------------
 
-# Port conflict check helper
 check_port() {
   local port=$1
-  ss -tlnH 2>/dev/null | awk '{print $4}' | grep -qE "(^|:)${port}$"
+  if command -v ss >/dev/null 2>&1; then
+    ss -tlnH 2>/dev/null | awk '{print $4}' | grep -qE "(^|:)${port}$"
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -tln 2>/dev/null | awk '{print $4}' | grep -qE "(^|:)${port}$"
+  else
+    # 확인할 수단이 없으면 사용 중이 아니라고 본다. 실제로 겹치면 compose가 알려준다.
+    return 1
+  fi
 }
-
-echo "[OPTiCS Installer] Checking for existing OPTiCS Agent containers..."
-if (cd "$INSTALL_DIR/OPTiCS-Agent" && $COMPOSE_CMD ps -q 2>/dev/null | grep -q .); then
-  echo "[OPTiCS Installer] Existing OPTiCS Agent containers are running. Stopping them to continue with the update..."
-  (cd "$INSTALL_DIR/OPTiCS-Agent" && $COMPOSE_CMD down)
-fi
 
 echo "[OPTiCS Installer] Checking ports..."
 
@@ -299,19 +382,50 @@ done
 
 echo "[OPTiCS Installer] Using ports: agent=$AGENT_PORT, dashboard=$DASHBOARD_PORT"
 
-echo "[OPTiCS Installer] Building agent client and dashboard..."
-cd "$INSTALL_DIR/OPTiCS-Agent"
-printf "AGENT_PORT=%s\nDASHBOARD_PORT=%s\n" "$AGENT_PORT" "$DASHBOARD_PORT" > .env.ports
-if [ "$SSH_CONFIGURED" -eq 1 ]; then
-  printf "HOST_SSH_PRIVATE_KEY_FILE=%s\n" "$SSH_PRIVATE_KEY" >> .env.ports
+# 포트를 .env에 적어 둔다. compose가 프로젝트 디렉터리의 .env를 자동으로 읽으므로,
+# 나중에 사용자가 그냥 `docker compose up -d`만 해도 같은 설정으로 뜬다.
+set_agent_env "AGENT_PORT" "$AGENT_PORT"
+set_agent_env "DASHBOARD_PORT" "$DASHBOARD_PORT"
+
+# ---------------------------------------------------------------------------
+# 이미지 수신 및 기동
+# ---------------------------------------------------------------------------
+
+cd "$INSTALL_DIR" || exit 1
+
+# AGENT_IMAGE_TAG를 지정하지 않으면 compose가 latest를 쓴다.
+# latest는 릴리스 워크플로가 정식 릴리스(prerelease 아님)에만 붙이므로 최신 안정판을 가리킨다.
+IMAGE_TAG="${OPTICS_AGENT_TAG:-latest}"
+if [ "$IMAGE_TAG" != "latest" ]; then
+  set_agent_env "AGENT_IMAGE_TAG" "$IMAGE_TAG"
+  set_agent_env "DASHBOARD_IMAGE_TAG" "$IMAGE_TAG"
+  echo "[OPTiCS Installer] Pinned image tag: $IMAGE_TAG"
 fi
-AGENT_PORT="$AGENT_PORT" DASHBOARD_PORT="$DASHBOARD_PORT" $COMPOSE_CMD --env-file .env.ports up --build -d
-rm -f .env.ports
+
+echo "[OPTiCS Installer] Pulling images from GHCR (tag: $IMAGE_TAG)..."
+if ! $COMPOSE_CMD pull; then
+  echo "[OPTiCS Installer] Failed to pull images from GHCR."
+  echo "[OPTiCS Installer] Check your network connection and try again."
+  exit 1
+fi
+
+echo "[OPTiCS Installer] Starting containers..."
+if ! $COMPOSE_CMD up -d; then
+  echo "[OPTiCS Installer] Failed to start containers. Check logs with:"
+  echo "    cd $INSTALL_DIR && $COMPOSE_CMD logs"
+  exit 1
+fi
 
 echo "[OPTiCS Installer] OPTiCS Agent installment finished."
 echo ""
-echo "    To access dashboard: http://localhost:$DASHBOARD_PORT/"
+echo "    Dashboard   : http://localhost:$DASHBOARD_PORT/"
+echo "    Install dir : $INSTALL_DIR"
 echo ""
+echo "    Update      : cd $INSTALL_DIR && $COMPOSE_CMD pull && $COMPOSE_CMD up -d"
+echo "    Stop        : cd $INSTALL_DIR && $COMPOSE_CMD down"
+echo "    Logs        : cd $INSTALL_DIR && $COMPOSE_CMD logs -f"
+echo ""
+
 read -p "[OPTiCS Installer] Do you want to enter Agent console after finish? (y/N): " answer
 if [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
   if $COMPOSE_CMD ps --status running | grep -q optics-agent; then
@@ -320,8 +434,5 @@ if [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
     echo "[OPTiCS Installer] Agent container is not running. Check logs with: $COMPOSE_CMD logs optics-agent"
   fi
 fi
-read -p "[OPTiCS Installer] Do you want to remove 'optics-build' folder? (Y/n): " answer
-if [ -z "$answer" ] || [ "$answer" = "Y" ] || [ "$answer" = "y" ]; then
-  rm -rf "$INSTALL_DIR"
-fi
+
 exit 0
