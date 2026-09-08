@@ -17,7 +17,7 @@
 # case when removing things, so errors are judged inline instead.
 $ErrorActionPreference = "Continue"
 
-$UNINSTALLER_VERSION = "0.5.0"
+$UNINSTALLER_VERSION = "0.6.0"
 
 $INSTALL_DIR = if ($env:OPTICS_INSTALL_DIR) { $env:OPTICS_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "OPTiCS\agent" }
 $AGENT_IMAGE = "ghcr.io/optics-organization/optics-agent"
@@ -223,8 +223,14 @@ function Find-Images {
 # volumes alone drops the shell and leaves the data. Read those paths first in order to
 # ask about them.
 function Find-DataDirs {
-    $script:DATA_DIR = Get-EnvValue "OPTICS_DATA_DIR"
-    $script:BUILD_DIR = Get-EnvValue "OPTICS_BUILD_DIR"
+    # Falls back to the pre-0.6.0 key names. Uninstall is exactly when stale state shows
+    # up, and without the fallback the paths read as unknown -- so data the user believed
+    # was removed would silently survive.
+    $script:DATA_DIR = Get-EnvValue "OPTICS_HOST_DATA_DIR"
+    if (-not $script:DATA_DIR) { $script:DATA_DIR = Get-EnvValue "OPTICS_DATA_DIR" }
+
+    $script:BUILD_DIR = Get-EnvValue "OPTICS_HOST_BUILD_DIR"
+    if (-not $script:BUILD_DIR) { $script:BUILD_DIR = Get-EnvValue "OPTICS_BUILD_DIR" }
 }
 
 # ---------------------------------------------------------------------------

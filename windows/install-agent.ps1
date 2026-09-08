@@ -11,9 +11,11 @@
 
 $ErrorActionPreference = "Stop"
 
-$INSTALLER_VERSION = "0.5.0"
+$INSTALLER_VERSION = "0.6.0"
 
-$AGENT_REPO_RAW = "https://raw.githubusercontent.com/OPTiCS-Organization/OPTiCS-Agent/main"
+$AGENT_REPO_BASE = "https://raw.githubusercontent.com/OPTiCS-Organization/OPTiCS-Agent"
+# Resolved from the chosen version once it is known; see Resolve-RepoRef.
+$AGENT_REPO_RAW = "$AGENT_REPO_BASE/main"
 $INSTALL_DIR = if ($env:OPTICS_INSTALL_DIR) { $env:OPTICS_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "OPTiCS\agent" }
 # Kept separate from the install dir: that holds a couple of compose files, while build
 # workspaces pile up here and can fill the drive.
@@ -33,6 +35,8 @@ $PLAN_DASHBOARD_PORT = ""
 $PLAN_STOP_CONTAINERS = "no"
 $PLAN_DOCKER = "present"
 $PLAN_COMPOSE = "present"
+$PLAN_COMPOSE_SUPPORTS_DATA_DIR = "no"
+$COMPOSE_TMP = ""
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -218,6 +222,61 @@ function Get-OpticsFile {
     }
 }
 
+# Quiet variant: a missing tag is an expected outcome during the probe, not an error
+# worth showing before the fallback has been tried.
+function Get-OpticsFileQuiet {
+    param([string]$Url, [string]$Destination)
+
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+# The compose file must come from the same version as the image, or the two can drift.
+#
+# "latest" resolves to main, not to whatever tag latest currently points at: GHCR's
+# latest and GitHub's releases are maintained by different mechanisms and may disagree,
+# and there is no `latest` git ref to fetch from anyway (raw.githubusercontent 404s).
+function Resolve-RepoRef {
+    if ($script:PLAN_IMAGE_TAG -eq "latest") { return "main" }
+    return $script:PLAN_IMAGE_TAG
+}
+
+# Download the compose for the chosen version into a temp file and see whether it
+# supports a custom data directory. Runs during phase 1, so it must not touch
+# INSTALL_DIR -- a temp file keeps the "abort changes nothing" contract.
+function Invoke-ProbeComposeFile {
+    $script:PLAN_COMPOSE_SUPPORTS_DATA_DIR = "no"
+
+    if (-not $script:COMPOSE_TMP) {
+        $script:COMPOSE_TMP = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+    }
+
+    $ref = Resolve-RepoRef
+    $script:AGENT_REPO_RAW = "$AGENT_REPO_BASE/$ref"
+
+    # A GHCR tag does not guarantee a matching git tag, so fall back to main rather
+    # than failing the install.
+    if (-not (Get-OpticsFileQuiet "$script:AGENT_REPO_RAW/docker-compose.yml" $script:COMPOSE_TMP)) {
+        if ($ref -ne "main") {
+            Warn "No compose file at tag $ref; using main instead."
+            $script:AGENT_REPO_RAW = "$AGENT_REPO_BASE/main"
+            if (-not (Get-OpticsFileQuiet "$script:AGENT_REPO_RAW/docker-compose.yml" $script:COMPOSE_TMP)) { return }
+        }
+        else { return }
+    }
+
+    # Ask the fetched file directly rather than comparing versions, so a backport to an
+    # older release is picked up correctly.
+    if (Select-String -Path $script:COMPOSE_TMP -Pattern 'OPTICS_HOST_DATA_DIR|OPTICS_HOST_BUILD_DIR' -Quiet) {
+        $script:PLAN_COMPOSE_SUPPORTS_DATA_DIR = "yes"
+    }
+}
+
 # Split on the first = only: values may contain =.
 function Get-EnvValue {
     param([string]$Key)
@@ -267,7 +326,9 @@ function Remove-AgentEnv {
 # .env pointing at an image that does not exist and even a manual docker compose up would
 # fail. Revert per key, not the whole file, so settings this installer never touched
 # (the Hub address, say) are not dragged back to the step-3 state.
-$ENV_BACKUP_KEYS = @("OPTICS_DATA_DIR", "OPTICS_BUILD_DIR", "AGENT_PORT", "DASHBOARD_PORT", "AGENT_IMAGE_TAG", "DASHBOARD_IMAGE_TAG")
+# The bare OPTICS_DATA_DIR/OPTICS_BUILD_DIR are the pre-0.6.0 names, kept here so an
+# upgrade that removes them can still put them back if the pull fails.
+$ENV_BACKUP_KEYS = @("OPTICS_HOST_DATA_DIR", "OPTICS_HOST_BUILD_DIR", "OPTICS_DATA_DIR", "OPTICS_BUILD_DIR", "AGENT_PORT", "DASHBOARD_PORT", "AGENT_IMAGE_TAG", "DASHBOARD_IMAGE_TAG")
 $script:ENV_BACKUP = $null
 
 function Backup-Env {
@@ -633,8 +694,10 @@ function Invoke-AskDataRoot {
     }
 
     # Default to the value already in .env so an update does not re-ask for the drive.
+    # Falls back to the pre-0.6.0 key so upgrading does not silently reset the drive.
     $default = $DATA_ROOT_DEFAULT
-    $existing = Get-EnvValue "OPTICS_DATA_DIR"
+    $existing = Get-EnvValue "OPTICS_HOST_DATA_DIR"
+    if (-not $existing) { $existing = Get-EnvValue "OPTICS_DATA_DIR" }
     if ($existing) {
         $parent = Split-Path ($existing -replace '/', '\') -Parent
         if ($parent) { $default = $parent }
@@ -656,7 +719,14 @@ function Invoke-AskDataRoot {
     }
 }
 
+# Wraps the question so every path that settles on a version re-probes the compose,
+# including the review's "change item 2" loop.
 function Invoke-AskImageTag {
+    Invoke-ChooseImageTag
+    Invoke-ProbeComposeFile
+}
+
+function Invoke-ChooseImageTag {
     if ($env:OPTICS_AGENT_TAG) {
         Ask-Step 2 "Agent version"
         Pause-Skip "From OPTICS_AGENT_TAG: $($env:OPTICS_AGENT_TAG)"
@@ -797,16 +867,37 @@ function Show-Review {
         $dockerLine = "will need a Docker Desktop update"
     }
 
+    # Older versions ship a compose without bind-mounted volumes, so the chosen
+    # directory would be ignored. Say so here rather than letting it fail silently.
+    if ($PLAN_COMPOSE_SUPPORTS_DATA_DIR -eq "yes") {
+        $dataLine = "$PLAN_DATA_ROOT  ($(Get-FreeSpaceText $PLAN_DATA_ROOT))"
+    }
+    else {
+        $dataLine = "not used by $PLAN_IMAGE_TAG  (data goes to Docker's default location)"
+        $versionLine = "$versionLine  - no custom data directory"
+    }
+
     Write-Host ""
     Write-Host "Review"
     Write-Host ""
-    Write-Host "    1  Data directory   $PLAN_DATA_ROOT  ($(Get-FreeSpaceText $PLAN_DATA_ROOT))"
+    Write-Host "    1  Data directory   $dataLine"
     Write-Host "    2  Agent version    $versionLine"
     Write-Host "    3  Ports            agent $PLAN_AGENT_PORT, dashboard $PLAN_DASHBOARD_PORT"
     Write-Host "    4  Docker           $dockerLine"
     Write-Host ""
     Write-Host "    Install dir        $INSTALL_DIR"
 
+    if ($PLAN_COMPOSE_SUPPORTS_DATA_DIR -ne "yes") {
+        Write-Host "    Version $PLAN_IMAGE_TAG has no custom data directory support."
+        # Suggesting "pick latest" is useless when latest is already the choice -- that
+        # means no released version supports it yet.
+        if ($PLAN_IMAGE_TAG -eq "latest") {
+            Write-Host "      No released version supports it yet; $PLAN_DATA_ROOT stays unused."
+        }
+        else {
+            Write-Host "      Choose 2 and pick latest to use $PLAN_DATA_ROOT"
+        }
+    }
     if ($PLAN_STOP_CONTAINERS -eq "yes") {
         Write-Host "    Running containers will restart after images are pulled"
     }
@@ -852,8 +943,15 @@ function Invoke-Plan {
     Step "Preparing install files"
     New-Item -ItemType Directory -Path $INSTALL_DIR -Force | Out-Null
 
-    Say "Downloading compose definition..."
-    if (-not (Get-OpticsFile "$AGENT_REPO_RAW/docker-compose.yml" $composePath)) { exit 1 }
+    # Already downloaded during phase 1 to probe it; reuse rather than fetching twice.
+    if ($COMPOSE_TMP -and (Test-Path $COMPOSE_TMP)) {
+        Copy-Item $COMPOSE_TMP $composePath -Force
+        Say "Compose definition ready"
+    }
+    else {
+        Say "Downloading compose definition..."
+        if (-not (Get-OpticsFile "$AGENT_REPO_RAW/docker-compose.yml" $composePath)) { exit 1 }
+    }
 
     # .env holds secrets and user settings; never overwrite an existing one, or a
     # reinstall would wipe things like the Hub address.
@@ -870,8 +968,23 @@ function Invoke-Plan {
     Backup-Env
     # Docker Desktop accepts backslash bind paths, but forward slashes keep .env readable
     # by other tools that parse it directly.
-    Set-AgentEnv "OPTICS_DATA_DIR" ((Join-Path $PLAN_DATA_ROOT "agent") -replace '\\', '/')
-    Set-AgentEnv "OPTICS_BUILD_DIR" ((Join-Path $PLAN_DATA_ROOT "build") -replace '\\', '/')
+    if ($PLAN_COMPOSE_SUPPORTS_DATA_DIR -eq "yes") {
+        Set-AgentEnv "OPTICS_HOST_DATA_DIR" ((Join-Path $PLAN_DATA_ROOT "agent") -replace '\\', '/')
+        Set-AgentEnv "OPTICS_HOST_BUILD_DIR" ((Join-Path $PLAN_DATA_ROOT "build") -replace '\\', '/')
+    }
+    else {
+        # This compose ignores the paths, but the uninstaller would still read them and
+        # offer to remove directories the Agent never used. Remove them instead.
+        Remove-AgentEnv "OPTICS_HOST_DATA_DIR"
+        Remove-AgentEnv "OPTICS_HOST_BUILD_DIR"
+        Say "Data directory not applied ($PLAN_IMAGE_TAG does not support it)"
+    }
+
+    # Drop the pre-0.6.0 names. env_file hands every key to the container, and the Agent
+    # reads OPTICS_BUILD_DIR as its build root -- leaving a host path there makes cleanup
+    # target a path that does not exist inside the container, breaking the next deploy.
+    Remove-AgentEnv "OPTICS_DATA_DIR"
+    Remove-AgentEnv "OPTICS_BUILD_DIR"
     Set-AgentEnv "AGENT_PORT" $PLAN_AGENT_PORT
     Set-AgentEnv "DASHBOARD_PORT" $PLAN_DASHBOARD_PORT
 
@@ -933,6 +1046,12 @@ function Get-RunningVersion {
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+# PowerShell has no trap EXIT; this fires on a normal end and on Ctrl+C, and a leftover
+# temp file in %TEMP% is harmless if it does not.
+$null = Register-EngineEvent PowerShell.Exiting -Action {
+    if ($COMPOSE_TMP -and (Test-Path $COMPOSE_TMP)) { Remove-Item $COMPOSE_TMP -Force -ErrorAction SilentlyContinue }
+}
 
 Write-Host ""
 Write-Host "OPTiCS Agent Installer v$INSTALLER_VERSION"

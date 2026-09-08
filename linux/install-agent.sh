@@ -16,9 +16,11 @@
 # Aborting at phase 2 therefore leaves the machine untouched.
 set -uo pipefail
 
-INSTALLER_VERSION="0.5.0"
+INSTALLER_VERSION="0.6.0"
 
-AGENT_REPO_RAW="https://raw.githubusercontent.com/OPTiCS-Organization/OPTiCS-Agent/main"
+AGENT_REPO_BASE="https://raw.githubusercontent.com/OPTiCS-Organization/OPTiCS-Agent"
+# Resolved from the chosen version once it is known; see resolve_repo_ref.
+AGENT_REPO_RAW="$AGENT_REPO_BASE/main"
 INSTALL_DIR="${OPTICS_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/optics/agent}"
 # Kept separate from the install dir: that holds two small files, while this grows
 # without bound as the build workspace accumulates.
@@ -36,11 +38,14 @@ PLAN_SSH_NOTE=""
 PLAN_STOP_CONTAINERS="no"
 PLAN_DOCKER="present"
 PLAN_COMPOSE="present"
+PLAN_COMPOSE_SUPPORTS_DATA_DIR="no"
+COMPOSE_TMP=""
 
 SSH_CONFIGURED=0
 SSH_PRIVATE_KEY=""
 SSH_READY_USER=""
 COMPOSE_CMD=""
+DOCKER_JUST_INSTALLED=0
 
 # Progress through phase 3.
 STEP_TOTAL=6
@@ -99,6 +104,7 @@ warn() { echo "  ! $1"; }
 cleanup() {
   [ -n "${TAGS_CACHE_FILE:-}" ] && rm -f "$TAGS_CACHE_FILE"
   [ -n "${ENV_BACKUP:-}" ] && rm -f "$ENV_BACKUP"
+  [ -n "${COMPOSE_TMP:-}" ] && rm -f "$COMPOSE_TMP"
   return 0
 }
 trap cleanup EXIT
@@ -217,7 +223,7 @@ install_docker() {
 
   sudo systemctl enable --now docker || return 1
   sudo usermod -aG docker "$USER"
-  say "Docker installed. Re-login may be needed for group changes."
+  say "Docker installed."
   return 0
 }
 
@@ -227,6 +233,49 @@ fetch() {
   if ! curl -fsSL "$url" -o "$dest"; then
     warn "Failed to download: $url"
     return 1
+  fi
+  return 0
+}
+
+# The compose file must come from the same version as the image, or the two can drift.
+#
+# "latest" resolves to main, not to whatever tag latest currently points at: GHCR's
+# latest and GitHub's releases are maintained by different mechanisms and may disagree,
+# and there is no `latest` git ref to fetch from anyway (raw.githubusercontent 404s).
+resolve_repo_ref() {
+  [ "$PLAN_IMAGE_TAG" = "latest" ] && { printf 'main'; return 0; }
+  printf '%s' "$PLAN_IMAGE_TAG"
+}
+
+# Download the compose for the chosen version into a temp file and see whether it
+# supports a custom data directory. Runs during phase 1, so it must not touch
+# INSTALL_DIR -- a self-cleaning temp file keeps the "abort changes nothing" contract.
+probe_compose_file() {
+  PLAN_COMPOSE_SUPPORTS_DATA_DIR="no"
+
+  [ -n "$COMPOSE_TMP" ] || COMPOSE_TMP=$(mktemp 2>/dev/null) || return 0
+
+  local ref
+  ref=$(resolve_repo_ref)
+  AGENT_REPO_RAW="$AGENT_REPO_BASE/$ref"
+
+  # A GHCR tag does not guarantee a matching git tag (0.5.x exists in git but not GHCR,
+  # and the reverse can happen too). Fall back to main rather than failing the install.
+  if ! curl -fsSL --max-time "$GHCR_TIMEOUT" "$AGENT_REPO_RAW/docker-compose.yml" -o "$COMPOSE_TMP" 2>/dev/null; then
+    if [ "$ref" != "main" ]; then
+      warn "No compose file at tag $ref; using main instead."
+      ref="main"
+      AGENT_REPO_RAW="$AGENT_REPO_BASE/main"
+      curl -fsSL --max-time "$GHCR_TIMEOUT" "$AGENT_REPO_RAW/docker-compose.yml" -o "$COMPOSE_TMP" 2>/dev/null || return 0
+    else
+      return 0
+    fi
+  fi
+
+  # Ask the fetched file directly rather than comparing versions, so a backport to an
+  # older release is picked up correctly.
+  if grep -q 'OPTICS_HOST_DATA_DIR\|OPTICS_HOST_BUILD_DIR' "$COMPOSE_TMP" 2>/dev/null; then
+    PLAN_COMPOSE_SUPPORTS_DATA_DIR="yes"
   fi
   return 0
 }
@@ -243,13 +292,23 @@ set_agent_env() {
   fi
 }
 
+unset_agent_env() {
+  local key="$1"
+  local env_file="$INSTALL_DIR/.env"
+
+  [ -f "$env_file" ] || return 0
+  sed -i "/^${key}=/d" "$env_file"
+}
+
 # Settings are written in step 3 but the pull happens in step 5; on failure .env would
 # point at an image that does not exist, so a later `docker compose up` would fail too.
 #
 # Restored key by key rather than wholesale: step 4 may have generated an SSH key and
 # edited authorized_keys, and rolling those .env values back would contradict the host.
 ENV_BACKUP=""
-ENV_BACKUP_KEYS="OPTICS_DATA_DIR OPTICS_BUILD_DIR AGENT_PORT DASHBOARD_PORT AGENT_IMAGE_TAG DASHBOARD_IMAGE_TAG"
+# The bare OPTICS_DATA_DIR/OPTICS_BUILD_DIR are the pre-0.6.0 names, kept here so an
+# upgrade that removes them can still put them back if the pull fails.
+ENV_BACKUP_KEYS="OPTICS_HOST_DATA_DIR OPTICS_HOST_BUILD_DIR OPTICS_DATA_DIR OPTICS_BUILD_DIR AGENT_PORT DASHBOARD_PORT AGENT_IMAGE_TAG DASHBOARD_IMAGE_TAG"
 
 backup_env() {
   [ -f "$INSTALL_DIR/.env" ] || return 0
@@ -567,6 +626,46 @@ configure_host_ssh() {
 }
 
 # Phase 3 only. Phase 1 works without Docker, so nothing is installed before consent.
+# `docker --version` only talks to the client binary, so it says nothing about whether
+# the daemon is reachable. Everything after this point needs the socket.
+ensure_docker_access() {
+  docker info >/dev/null 2>&1 && return 0
+
+  local err
+  err=$(docker info 2>&1)
+
+  case "$err" in
+    *"permission denied"*)
+      warn "Cannot access the Docker daemon: permission denied."
+      # usermod adds the group, but a process cannot gain a group it did not start with,
+      # so a fresh login (or `newgrp docker`) is required before this works.
+      if [ "${DOCKER_JUST_INSTALLED:-0}" = "1" ]; then
+        say "Docker was just installed and $USER was added to the docker group."
+        say "That group only applies to new sessions."
+        say "Log out and back in, then run this script again."
+        say "To continue in this terminal instead: newgrp docker"
+      elif id -nG "$USER" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+        say "$USER is in the docker group, but this shell started before that changed."
+        say "Log out and back in, then run this script again."
+        say "To continue in this terminal instead: newgrp docker"
+      else
+        say "Add yourself to the docker group, then log out and back in:"
+        say "    sudo usermod -aG docker $USER"
+      fi
+      ;;
+    *"Cannot connect"*|*"daemon"*)
+      warn "The Docker daemon is not running."
+      say "Start it, then run this script again:"
+      say "    sudo systemctl enable --now docker"
+      ;;
+    *)
+      warn "Cannot access the Docker daemon."
+      say "${err%%$'\n'*}"
+      ;;
+  esac
+  exit 1
+}
+
 ensure_docker() {
   local docker_ver
   docker_ver=$(docker --version 2>/dev/null)
@@ -577,6 +676,7 @@ ensure_docker() {
       warn "Docker installation failed. Install it manually and retry."
       exit 1
     fi
+    DOCKER_JUST_INSTALLED=1
   else
     say "Docker ${docker_ver#Docker version }"
   fi
@@ -585,11 +685,13 @@ ensure_docker() {
   # of this compose file.
   if docker compose version >/dev/null 2>&1; then
     COMPOSE_CMD="docker compose"
+    ensure_docker_access
     return 0
   fi
 
   if command -v docker-compose >/dev/null 2>&1; then
     COMPOSE_CMD="docker-compose"
+    ensure_docker_access
     return 0
   fi
 
@@ -607,6 +709,8 @@ ensure_docker() {
     warn "Docker Compose installation failed. Install it manually and retry."
     exit 1
   fi
+
+  ensure_docker_access
 }
 
 # Phase 1 variant: fill COMPOSE_CMD if present, stay quiet otherwise. Its absence
@@ -654,9 +758,11 @@ ask_data_root() {
   fi
 
   # On reinstall, default to what .env already says so the chosen drive is not retyped.
+  # Falls back to the pre-0.6.0 key so upgrading does not silently reset the drive.
   local default="$DATA_ROOT_DEFAULT"
   local existing
-  existing=$(grep -E '^OPTICS_DATA_DIR=' "$INSTALL_DIR/.env" 2>/dev/null | tail -n 1 | cut -d= -f2-)
+  existing=$(grep -E '^OPTICS_HOST_DATA_DIR=' "$INSTALL_DIR/.env" 2>/dev/null | tail -n 1 | cut -d= -f2-)
+  [ -n "$existing" ] || existing=$(grep -E '^OPTICS_DATA_DIR=' "$INSTALL_DIR/.env" 2>/dev/null | tail -n 1 | cut -d= -f2-)
   if [ -n "$existing" ]; then
     default=$(dirname "$existing")
   fi
@@ -683,7 +789,14 @@ ask_data_root() {
   done
 }
 
+# Wraps the question so every path that settles on a version re-probes the compose,
+# including the review's "change item 2" loop.
 ask_image_tag() {
+  choose_image_tag
+  probe_compose_file
+}
+
+choose_image_tag() {
   if [ -n "${OPTICS_AGENT_TAG:-}" ]; then
     ask_step 2 "Agent version"
     pause_skip "From OPTICS_AGENT_TAG: $OPTICS_AGENT_TAG"
@@ -892,10 +1005,20 @@ print_review() {
     docker_line="already installed"
   fi
 
+  # Older versions ship a compose without bind-mounted volumes, so the chosen directory
+  # would be ignored. Say so here rather than letting it fail silently.
+  local data_line
+  if [ "$PLAN_COMPOSE_SUPPORTS_DATA_DIR" = "yes" ]; then
+    data_line="$PLAN_DATA_ROOT  ($(free_space_of "$PLAN_DATA_ROOT"))"
+  else
+    data_line="not used by $PLAN_IMAGE_TAG  (data goes to Docker's default location)"
+    version_line="$version_line  - no custom data directory"
+  fi
+
   echo ""
   echo "Review"
   echo ""
-  echo "    1  Data directory   $PLAN_DATA_ROOT  ($(free_space_of "$PLAN_DATA_ROOT"))"
+  echo "    1  Data directory   $data_line"
   echo "    2  Agent version    $version_line"
   echo "    3  Ports            agent $PLAN_AGENT_PORT, dashboard $PLAN_DASHBOARD_PORT"
   echo "    4  Web SSH          $ssh_line"
@@ -903,6 +1026,16 @@ print_review() {
   echo ""
   echo "    Install dir        $INSTALL_DIR"
 
+  if [ "$PLAN_COMPOSE_SUPPORTS_DATA_DIR" != "yes" ]; then
+    echo "    Version $PLAN_IMAGE_TAG has no custom data directory support."
+    # Suggesting "pick latest" is useless when latest is already the choice -- that
+    # means no released version supports it yet.
+    if [ "$PLAN_IMAGE_TAG" = "latest" ]; then
+      echo "      No released version supports it yet; $PLAN_DATA_ROOT stays unused."
+    else
+      echo "      Choose 2 and pick latest to use $PLAN_DATA_ROOT"
+    fi
+  fi
   if [ "$PLAN_STOP_CONTAINERS" = "yes" ]; then
     echo "    Running containers will restart after images are pulled"
   fi
@@ -953,8 +1086,14 @@ apply_plan() {
   step "Preparing install files"
   mkdir -p "$INSTALL_DIR"
 
-  say "Downloading compose definition..."
-  fetch "$AGENT_REPO_RAW/docker-compose.yml" "$INSTALL_DIR/docker-compose.yml" || exit 1
+  # Already downloaded during phase 1 to probe it; reuse rather than fetching twice.
+  if [ -n "$COMPOSE_TMP" ] && [ -s "$COMPOSE_TMP" ]; then
+    cp "$COMPOSE_TMP" "$INSTALL_DIR/docker-compose.yml"
+    say "Compose definition ready"
+  else
+    say "Downloading compose definition..."
+    fetch "$AGENT_REPO_RAW/docker-compose.yml" "$INSTALL_DIR/docker-compose.yml" || exit 1
+  fi
 
   # Never overwrite an existing .env: it holds secrets and user settings, and resetting
   # it on every reinstall would wipe the SSH config and Hub address.
@@ -968,8 +1107,23 @@ apply_plan() {
   step "Writing configuration"
   # .env changes start here; a failed pull rolls back to this point.
   backup_env
-  set_agent_env "OPTICS_DATA_DIR" "$PLAN_DATA_ROOT/agent"
-  set_agent_env "OPTICS_BUILD_DIR" "$PLAN_DATA_ROOT/build"
+  if [ "$PLAN_COMPOSE_SUPPORTS_DATA_DIR" = "yes" ]; then
+    set_agent_env "OPTICS_HOST_DATA_DIR" "$PLAN_DATA_ROOT/agent"
+    set_agent_env "OPTICS_HOST_BUILD_DIR" "$PLAN_DATA_ROOT/build"
+  else
+    # This compose ignores the paths, but the uninstaller would still read them and
+    # offer to rm -rf directories the Agent never used. Remove them instead.
+    unset_agent_env "OPTICS_HOST_DATA_DIR"
+    unset_agent_env "OPTICS_HOST_BUILD_DIR"
+    say "Data directory not applied ($PLAN_IMAGE_TAG does not support it)"
+  fi
+
+  # Drop the pre-0.6.0 names. env_file hands every key to the container, and the Agent
+  # reads OPTICS_BUILD_DIR as its build root -- leaving a host path there makes cleanup
+  # target a path that does not exist inside the container, which breaks the next deploy.
+  unset_agent_env "OPTICS_DATA_DIR"
+  unset_agent_env "OPTICS_BUILD_DIR"
+
   set_agent_env "AGENT_PORT" "$PLAN_AGENT_PORT"
   set_agent_env "DASHBOARD_PORT" "$PLAN_DASHBOARD_PORT"
 

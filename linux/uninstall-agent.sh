@@ -13,7 +13,7 @@
 # Deletion cannot be undone, so aborting at phase 2 leaves everything in place.
 set -uo pipefail
 
-UNINSTALLER_VERSION="0.5.0"
+UNINSTALLER_VERSION="0.6.0"
 
 INSTALL_DIR="${OPTICS_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/optics/agent}"
 AGENT_IMAGE="ghcr.io/optics-organization/optics-agent"
@@ -182,8 +182,14 @@ detect_images() {
 # Since 0.7.0 both volumes bind-mount host directories named in .env, so removing the
 # volumes alone leaves the real data behind. Those paths must be read first.
 detect_data() {
-  DATA_DIR=$(env_value OPTICS_DATA_DIR)
-  BUILD_DIR=$(env_value OPTICS_BUILD_DIR)
+  # Falls back to the pre-0.6.0 key names. Uninstall is exactly when stale state shows
+  # up, and without the fallback the paths read as unknown -- so data the user believed
+  # was removed would silently survive.
+  DATA_DIR=$(env_value OPTICS_HOST_DATA_DIR)
+  [ -n "$DATA_DIR" ] || DATA_DIR=$(env_value OPTICS_DATA_DIR)
+
+  BUILD_DIR=$(env_value OPTICS_HOST_BUILD_DIR)
+  [ -n "$BUILD_DIR" ] || BUILD_DIR=$(env_value OPTICS_BUILD_DIR)
 }
 
 detect_ssh() {
